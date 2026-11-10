@@ -1,0 +1,22 @@
+{
+  "name": "cicd-with-github-webhooks",
+  "version": "1.0.0",
+  "description": "Production-grade Custom CI/CD Server using GitHub Webhooks, BullMQ Queue, Change Detection, and Self-Healing Rollback",
+  "main": "app.js",
+  "scripts": {
+    "start": "node --env-file=.env --no-deprecation app.js",
+    "dev": "node --watch --env-file=.env --no-deprecation app.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@types/node": "^26.6.5",
+    "bullmq": "^6.7.3",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "redis": "^6.3.1"
+  }
+}

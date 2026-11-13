@@ -18,8 +18,16 @@ export const deployWorker = new Worker(
   "cicd-server-queue",
   async (job) => {
     const { repository, branch, commitSha, author, depsChanged } = job.data;
+    const lkgKey = `lkg:${repository}:${branch}`;
+    const currentLkg = (await redisClient.get(lkgKey)) || "";
+
     console.log(
       `[Worker] Processing Job #${job.id}: Deploying ${repository} (${branch}) - ${commitSha}`,
+    );
+    console.log(
+      `[Worker] Current LKG for ${repository}:${branch}: ${
+        currentLkg ? currentLkg.slice(0, 7) : "(none / Day 0)"
+      }`,
     );
 
     await setCommitStatus({
@@ -33,9 +41,14 @@ export const deployWorker = new Worker(
     return new Promise((resolve, reject) => {
       const path = process.env.DEPLOY_SCRIPT_PATH || "./deploy.sh";
       if (!path) return reject(new Error("script path not found."));
-      const childProcess = spawn(bashBin, [path, branch, String(depsChanged)], {
-        env: { ...process.env },
-      });
+
+      const childProcess = spawn(
+        bashBin,
+        [path, branch, String(depsChanged), currentLkg],
+        {
+          env: { ...process.env, LKG_COMMIT: currentLkg },
+        },
+      );
 
       childProcess.on("spawn", () => {
         console.log("child process spawned");
@@ -52,6 +65,11 @@ export const deployWorker = new Worker(
       childProcess.on("close", async (code) => {
         if (code == 0) {
           console.log(`[Worker] Job #${job.id} completed successfully.`);
+          await redisClient.set(lkgKey, commitSha);
+          console.log(
+            `[Worker] Updated LKG in Redis for ${repository}:${branch} -> ${commitSha.slice(0, 7)}`,
+          );
+
           await setCommitStatus({
             repo: repository,
             commitSha,
@@ -61,11 +79,15 @@ export const deployWorker = new Worker(
           return resolve({ success: true, commitSha });
         } else {
           console.error(`[Worker] Job #${job.id} failed with code ${code}.`);
+          const failureDesc = currentLkg
+            ? `Deployment failed. Rolled back to LKG: ${currentLkg.slice(0, 7)}`
+            : "Initial deployment (Day 0) failed. Service torn down.";
+
           await setCommitStatus({
             repo: repository,
             commitSha,
             state: "failure",
-            description: "Deployment failed. Auto-rollback triggered.",
+            description: failureDesc,
           });
           return reject(new Error(`Job failed with code ${code}`));
         }

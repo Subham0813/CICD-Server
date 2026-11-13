@@ -4,6 +4,7 @@ set -eo pipefail
 # config
 BRANCH="${1:-main}"
 DEPS_CHANGED="${2:-true}"
+LKG_COMMIT="${3:-${LKG_COMMIT:-}}"
 PORT="${TARGET_PORT:-4000}"
 HEALTH_URL="http://127.0.0.1:${PORT}/health"
 MAX_RETRIES=5
@@ -18,9 +19,12 @@ if [ -n "${TARGET_DIR}" ] && [ -d "${TARGET_DIR}" ]; then
     cd "${TARGET_DIR}"
 fi
 
-# capture LKG (Last Known Good) commit
-PREV_COMMIT=$(git rev-parse HEAD)
-echo "[DEPLOY] LKG captured..."
+# LKG check
+if [ -n "${LKG_COMMIT}" ]; then
+    echo "[DEPLOY] LKG commit from Redis: ${LKG_COMMIT}"
+else
+    echo "[DEPLOY] Day 0 detected: No prior verified LKG on record."
+fi
 
 # pull latest changes
 echo "[DEPLOY] pulling latest code..."
@@ -61,23 +65,38 @@ for i in $(seq 1 $MAX_RETRIES); do
     sleep ${RETRY_DELAY}
 done
 
-# Rollback to LKG if health check failed
+# Rollback logic if health check failed
 if [ ${HEALTHY} -eq 0 ]; then
-    echo " FATAL: Healthcheck failed! Rolling back to LKG: ${PREV_COMMIT}"
+    if [ -z "${LKG_COMMIT}" ]; then
+        echo "[ROLLBACK] FATAL: Initial deployment (Day 0) failed health checks!"
+        echo "[ROLLBACK] No prior LKG exists. Executing service teardown to prevent port collisions..."
 
-    git checkout ${PREV_COMMIT}
-    if [ -f "package.json" ]; then
-        npm ci --omit=dev
-    fi
-    if command -v pm2 >/dev/null 2>&1; then
-        pm2 reload ecosystem.config.js || true
-    fi
+        # Kill PM2 process to free port and resources
+        if command -v pm2 >/dev/null 2>&1; then
+            pm2 delete ecosystem.config.js || pm2 stop ecosystem.config.js || true
+        fi
 
-    # Re-check health after rollback
-    if curl -s -f -m 3 "${HEALTH_URL}" > /dev/null; then
-        echo "[ROLLBACK] rollback successful, application is healthy."
+        git reset --hard HEAD
+        echo "[ROLLBACK] Service successfully torn down. Manual intervention required for initial release."
+        exit 1
     else
-        echo "[ROLLBACK] FATAL: rollback failed!!! Manual intervention required."
+        echo "[ROLLBACK] FATAL: Healthcheck failed! Rolling back to LKG: ${LKG_COMMIT}"
+
+        git fetch origin
+        git reset --hard "${LKG_COMMIT}"
+        if [ -f "package.json" ]; then
+            npm ci --omit=dev
+        fi
+        if command -v pm2 >/dev/null 2>&1; then
+            pm2 reload ecosystem.config.js || pm2 restart ecosystem.config.js || true
+        fi
+
+        # Re-check health after rollback
+        if curl -s -f -m 3 "${HEALTH_URL}" > /dev/null; then
+            echo "[ROLLBACK] Rollback successful, application restored to healthy state."
+        else
+            echo "[ROLLBACK] FATAL: Rollback failed to restore healthy state! Manual intervention required."
+        fi
         exit 1
     fi
 fi

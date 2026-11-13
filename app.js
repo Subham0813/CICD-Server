@@ -66,11 +66,20 @@ app.post("/api/github/webhook", async (req, res) => {
       (f) => f.endsWith("package.json") || f.endsWith("package-lock.json"),
     );
 
+    // Extract commit details
+    const headCommit = body.head_commit || commits[commits.length - 1] || {};
+    const commitMessage = headCommit.message || "No commit message provided";
+    const commitUrl =
+      headCommit.url ||
+      `https://github.com/${body.repository?.full_name}/commit/${body.after}`;
+
     const job = await deployQueue.add("github-deploy", {
       repository: body.repository?.full_name || "unknown",
       branch,
       commitSha: body.after,
-      author: body.pusher?.name || "unknown",
+      commitMessage,
+      commitUrl,
+      author: body.pusher?.name || headCommit.author?.name || "unknown",
       depsChanged, // boolean: true if dependencies need reinstalling
     });
 

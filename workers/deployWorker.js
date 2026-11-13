@@ -3,6 +3,7 @@ import { redisClient } from "../configs/redis.js";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { setCommitStatus } from "../services/githubStatus.js";
+import { sendDeploymentNotification } from "../services/notifier.js";
 
 const bashBin =
   process.platform === "win32" &&
@@ -17,9 +18,18 @@ await workerClient.connect();
 export const deployWorker = new Worker(
   "cicd-server-queue",
   async (job) => {
-    const { repository, branch, commitSha, author, depsChanged } = job.data;
+    const {
+      repository,
+      branch,
+      commitSha,
+      commitMessage,
+      commitUrl,
+      author,
+      depsChanged,
+    } = job.data;
     const lkgKey = `lkg:${repository}:${branch}`;
     const currentLkg = (await redisClient.get(lkgKey)) || "";
+    const startTime = Date.now();
 
     console.log(
       `[Worker] Processing Job #${job.id}: Deploying ${repository} (${branch}) - ${commitSha}`,
@@ -63,6 +73,8 @@ export const deployWorker = new Worker(
       });
 
       childProcess.on("close", async (code) => {
+        const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+
         if (code == 0) {
           console.log(`[Worker] Job #${job.id} completed successfully.`);
           await redisClient.set(lkgKey, commitSha);
@@ -76,9 +88,25 @@ export const deployWorker = new Worker(
             state: "success",
             description: "Deployment passed all health checks!",
           });
+
+          await sendDeploymentNotification({
+            repository,
+            branch,
+            commitSha,
+            commitMessage,
+            commitUrl,
+            author,
+            status: "success",
+            duration,
+            depsChanged,
+            lkgSha: commitSha,
+            isDayZero: !currentLkg,
+          });
+
           return resolve({ success: true, commitSha });
         } else {
           console.error(`[Worker] Job #${job.id} failed with code ${code}.`);
+          const isDayZero = !currentLkg;
           const failureDesc = currentLkg
             ? `Deployment failed. Rolled back to LKG: ${currentLkg.slice(0, 7)}`
             : "Initial deployment (Day 0) failed. Service torn down.";
@@ -89,11 +117,28 @@ export const deployWorker = new Worker(
             state: "failure",
             description: failureDesc,
           });
+
+          await sendDeploymentNotification({
+            repository,
+            branch,
+            commitSha,
+            commitMessage,
+            commitUrl,
+            author,
+            status: "failure",
+            duration,
+            depsChanged,
+            lkgSha: currentLkg,
+            isDayZero,
+            errorMessage: `deploy.sh exited with code ${code}`,
+          });
+
           return reject(new Error(`Job failed with code ${code}`));
         }
       });
 
       childProcess.on("error", async (err) => {
+        const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
         console.error(
           `[Worker] Job #${job.id} encountered an error during execution.`,
         );
@@ -103,6 +148,22 @@ export const deployWorker = new Worker(
           state: "failure",
           description: "Internal execution error occurred.",
         });
+
+        await sendDeploymentNotification({
+          repository,
+          branch,
+          commitSha,
+          commitMessage,
+          commitUrl,
+          author,
+          status: "failure",
+          duration,
+          depsChanged,
+          lkgSha: currentLkg,
+          isDayZero: !currentLkg,
+          errorMessage: err.message,
+        });
+
         return reject(err);
       });
     });

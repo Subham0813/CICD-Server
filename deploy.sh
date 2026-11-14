@@ -2,28 +2,33 @@
 set -eo pipefail
 
 # config
-BRANCH="${1:-main}"
-DEPS_CHANGED="${2:-true}"
-LKG_COMMIT="${3:-${LKG_COMMIT:-}}"
-PORT="${TARGET_PORT:-4000}"
-HEALTH_URL="http://127.0.0.1:${PORT}/health"
-MAX_RETRIES=5
-RETRY_DELAY=2
-
+BRANCH="${BRANCH:-}"
 echo "[DEPLOY] starting for branch : ${BRANCH}"
 
 # If TARGET_DIR is set, navigate to target project repository
-TARGET_DIR="${TARGET_DIR:-../learning-gh-action}"
-if [ -n "${TARGET_DIR}" ] && [ -d "${TARGET_DIR}" ]; then
-    echo "[DEPLOY] Target directory specified. Switching to: ${TARGET_DIR}"
-    cd "${TARGET_DIR}"
+TARGET_DIR="${TARGET_DIR:-}"
+if [ ! -d "${TARGET_DIR}" ]; then
+    echo "[DEPLOY] FATAL: TARGET_DIR '${TARGET_DIR}' does not exist!"
+    echo "[DEPLOY] Refusing to deploy inside CI/CD server directory to prevent self-corruption."
+    exit 1
 fi
+echo "[DEPLOY] Switching directory to target: ${TARGET_DIR}"
+cd "${TARGET_DIR}"
 
 # LKG check
+LKG_COMMIT="${LKG_COMMIT:-}"
 if [ -n "${LKG_COMMIT}" ]; then
     echo "[DEPLOY] LKG commit from Redis: ${LKG_COMMIT}"
 else
     echo "[DEPLOY] Day 0 detected: No prior verified LKG on record."
+fi
+
+# check Remote
+REPOSITORY="${REPOSITORY:-}"
+CURRENT_REMOTE=$(git config --get remote.origin.url || true)
+if [[ "${CURRENT_REMOTE}" != *"${REPOSITORY}"* ]]; then
+    echo "[DEPLOY] FATAL: Directory remote '${CURRENT_REMOTE}' does not match target repo '${REPOSITORY}'!"
+    exit 1
 fi
 
 # pull latest changes
@@ -33,6 +38,7 @@ git checkout ${BRANCH}
 git pull origin ${BRANCH}
 
 # clean install prod deps
+DEPS_CHANGED="${DEPS_CHANGED:-}"
 if [ "$DEPS_CHANGED" = "true" ] || [ ! -d "node_modules" ]; then
     if [ -f "package.json" ]; then
         echo "[DEPLOY] Dependencies changed (or node_modules missing). clean installing dependencies..."
@@ -45,13 +51,18 @@ else
 fi
 
 # reload application via pm2
+CONFIG_PATH=${CONFIG_PATH:-ecosystem.config.js}
 if command -v pm2 >/dev/null 2>&1; then
-    pm2 reload ecosystem.config.js || pm2 restart ecosystem.config.js
+    pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH}
 else
     echo "[DEPLOY] pm2 not found in PATH; skipping PM2 reload (local simulation mode)"
 fi
 
 # Health check of deploymwnt
+PORT="${TARGET_PORT:-4000}"
+HEALTH_URL="http://127.0.0.1:${PORT}/health"
+MAX_RETRIES=5
+RETRY_DELAY=2
 echo "[CHECK] checking server health..."
 HEALTHY=0
 for i in $(seq 1 $MAX_RETRIES); do
@@ -73,7 +84,7 @@ if [ ${HEALTHY} -eq 0 ]; then
 
         # Kill PM2 process to free port and resources
         if command -v pm2 >/dev/null 2>&1; then
-            pm2 delete ecosystem.config.js || pm2 stop ecosystem.config.js || true
+            pm2 delete ${CONFIG_PATH} || pm2 stop ${CONFIG_PATH} || true
         fi
 
         git reset --hard HEAD
@@ -88,7 +99,7 @@ if [ ${HEALTHY} -eq 0 ]; then
             npm ci --omit=dev
         fi
         if command -v pm2 >/dev/null 2>&1; then
-            pm2 reload ecosystem.config.js || pm2 restart ecosystem.config.js || true
+            pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH} || true
         fi
 
         # Re-check health after rollback

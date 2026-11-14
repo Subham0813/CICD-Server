@@ -52,13 +52,16 @@ export const deployWorker = new Worker(
       const path = process.env.DEPLOY_SCRIPT_PATH || "./deploy.sh";
       if (!path) return reject(new Error("script path not found."));
 
-      const childProcess = spawn(
-        bashBin,
-        [path, branch, String(depsChanged), currentLkg],
-        {
-          env: { ...process.env, LKG_COMMIT: currentLkg },
+      const childProcess = spawn(bashBin, [path], {
+        env: {
+          ...process.env,
+          BRANCH: branch,
+          REPOSITORY: repository,
+          COMMIT_SHA: commitSha,
+          DEPS_CHANGED: String(depsChanged),
+          LKG_COMMIT: currentLkg,
         },
-      );
+      });
 
       childProcess.on("spawn", () => {
         console.log("child process spawned");

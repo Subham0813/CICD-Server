@@ -4,7 +4,7 @@ import { deployQueue } from "./queues/deployQueue.js";
 import "./workers/deployWorker.js";
 
 const app = express();
-const port = process.env.TARGET_PORT || 5050;
+const port = process.env.PORT || 5050;
 
 app.use(
   express.json({

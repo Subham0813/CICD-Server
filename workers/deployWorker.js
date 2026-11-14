@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { setCommitStatus } from "../services/githubStatus.js";
 import { sendDeploymentNotification } from "../services/notifier.js";
+import { publishDeploymentLog } from "../services/logStreamer.js";
 
 const bashBin =
   process.platform === "win32" &&
@@ -26,6 +27,7 @@ export const deployWorker = new Worker(
       commitUrl,
       author,
       depsChanged,
+      isPrivate = false,
     } = job.data;
     const lkgKey = `lkg:${repository}:${branch}`;
     const currentLkg = (await redisClient.get(lkgKey)) || "";
@@ -38,6 +40,20 @@ export const deployWorker = new Worker(
       `[Worker] Current LKG for ${repository}:${branch}: ${
         currentLkg ? currentLkg.slice(0, 7) : "(none / Day 0)"
       }`,
+    );
+
+    // Stream initial status logs to Redis
+    await publishDeploymentLog(
+      job.id,
+      `[Worker] Processing Job #${job.id}: Deploying ${repository} (${branch}) - ${commitSha.slice(0, 7)}`,
+      "status",
+    );
+    await publishDeploymentLog(
+      job.id,
+      currentLkg
+        ? `[Worker] Current LKG on record: ${currentLkg.slice(0, 7)}`
+        : "[Worker] Day 0 detected: No prior verified LKG on record",
+      "status",
     );
 
     await setCommitStatus({
@@ -60,6 +76,8 @@ export const deployWorker = new Worker(
           COMMIT_SHA: commitSha,
           DEPS_CHANGED: String(depsChanged),
           LKG_COMMIT: currentLkg,
+          IS_PRIVATE: String(isPrivate),
+          GITHUB_TOKEN: process.env.GITHUB_TOKEN || "",
         },
       });
 
@@ -67,12 +85,24 @@ export const deployWorker = new Worker(
         console.log("child process spawned");
       });
 
-      childProcess.stdout.on("data", (data) => {
+      childProcess.stdout.on("data", async (data) => {
         process.stdout.write(data);
+        childProcess.stdout.pause();
+        try {
+          await publishDeploymentLog(job.id, data.toString(), "log");
+        } finally {
+          childProcess.stdout.resume();
+        }
       });
 
-      childProcess.stderr.on("data", (data) => {
-        process.stdout.write(data);
+      childProcess.stderr.on("data", async (data) => {
+        process.stderr.write(data);
+        childProcess.stderr.pause();
+        try {
+          await publishDeploymentLog(job.id, data.toString(), "log");
+        } finally {
+          childProcess.stderr.resume();
+        }
       });
 
       childProcess.on("close", async (code) => {
@@ -83,6 +113,18 @@ export const deployWorker = new Worker(
           await redisClient.set(lkgKey, commitSha);
           console.log(
             `[Worker] Updated LKG in Redis for ${repository}:${branch} -> ${commitSha.slice(0, 7)}`,
+          );
+
+          await publishDeploymentLog(
+            job.id,
+            {
+              status: "success",
+              code: 0,
+              duration,
+              commitSha,
+              message: "Deployment passed all health checks!",
+            },
+            "complete",
           );
 
           await setCommitStatus({
@@ -114,6 +156,18 @@ export const deployWorker = new Worker(
             ? `Deployment failed. Rolled back to LKG: ${currentLkg.slice(0, 7)}`
             : "Initial deployment (Day 0) failed. Service torn down.";
 
+          await publishDeploymentLog(
+            job.id,
+            {
+              status: "failure",
+              code,
+              duration,
+              commitSha,
+              message: failureDesc,
+            },
+            "complete",
+          );
+
           await setCommitStatus({
             repo: repository,
             commitSha,
@@ -144,6 +198,16 @@ export const deployWorker = new Worker(
         const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
         console.error(
           `[Worker] Job #${job.id} encountered an error during execution.`,
+        );
+
+        await publishDeploymentLog(
+          job.id,
+          {
+            status: "failure",
+            error: err.message,
+            message: "Internal execution error occurred.",
+          },
+          "complete",
         );
         await setCommitStatus({
           repo: repository,

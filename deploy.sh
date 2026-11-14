@@ -1,17 +1,53 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-# config
+# Never hang on interactive terminal prompts in non-interactive CI/CD runs
+export GIT_TERMINAL_PROMPT=0
+
+# Configuration
 BRANCH="${BRANCH:-}"
+REPOSITORY="${REPOSITORY:-}"
+IS_PRIVATE="${IS_PRIVATE:-false}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+
 echo "[DEPLOY] starting for branch : ${BRANCH}"
 
-# If TARGET_DIR is set, navigate to target project repository
-TARGET_DIR="${TARGET_DIR:-}"
-if [ ! -d "${TARGET_DIR}" ]; then
-    echo "[DEPLOY] FATAL: TARGET_DIR '${TARGET_DIR}' does not exist!"
-    echo "[DEPLOY] Refusing to deploy inside CI/CD server directory to prevent self-corruption."
+#  Resolve repository name and target directory
+REPO_NAME="${REPOSITORY##*/}"
+TARGET_DIR="${TARGET_DIR:-../${REPO_NAME}}"
+
+# Guard against accidental deployment inside CI/CD server directory
+if [ "${TARGET_DIR}" = "." ] || [ -z "${REPO_NAME}" ]; then
+    echo "[DEPLOY] FATAL: Refusing to deploy inside CI/CD server directory."
     exit 1
 fi
+
+JUST_CLONED=0
+
+# If target directory does not exist, provision it via git clone
+if [ ! -d "${TARGET_DIR}" ]; then
+    echo "[DEPLOY] Target directory '${TARGET_DIR}' does not exist."
+
+    # Guard: Private repo requires GITHUB_TOKEN
+    if [ "${IS_PRIVATE}" = "true" ] && [ -z "${GITHUB_TOKEN}" ]; then
+        echo "[DEPLOY] FATAL: Repository '${REPOSITORY}' is PRIVATE, but GITHUB_TOKEN is not configured!"
+        echo "[DEPLOY] Please configure GITHUB_TOKEN in your .env file with repo read permissions."
+        exit 1
+    fi
+
+    echo "[DEPLOY] Initializing fresh clone for ${REPOSITORY} (${BRANCH})..."
+    mkdir -p "$(dirname "${TARGET_DIR}")"
+
+    if [ -n "${GITHUB_TOKEN}" ]; then
+        CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git"
+    else
+        CLONE_URL="https://github.com/${REPOSITORY}.git"
+    fi
+
+    git clone --branch "${BRANCH}" "${CLONE_URL}" "${TARGET_DIR}"
+    JUST_CLONED=1
+fi
+
 echo "[DEPLOY] Switching directory to target: ${TARGET_DIR}"
 cd "${TARGET_DIR}"
 
@@ -23,21 +59,24 @@ else
     echo "[DEPLOY] Day 0 detected: No prior verified LKG on record."
 fi
 
-# check Remote
-REPOSITORY="${REPOSITORY:-}"
+# Check Remote URL matches repository
 CURRENT_REMOTE=$(git config --get remote.origin.url || true)
 if [[ "${CURRENT_REMOTE}" != *"${REPOSITORY}"* ]]; then
     echo "[DEPLOY] FATAL: Directory remote '${CURRENT_REMOTE}' does not match target repo '${REPOSITORY}'!"
     exit 1
 fi
 
-# pull latest changes
-echo "[DEPLOY] pulling latest code..."
-git fetch origin ${BRANCH}
-git checkout ${BRANCH}
-git pull origin ${BRANCH}
+# Pull latest changes (skip if freshly cloned)
+if [ ${JUST_CLONED} -eq 0 ]; then
+    echo "[DEPLOY] pulling latest code..."
+    git fetch origin ${BRANCH}
+    git checkout ${BRANCH}
+    git pull origin ${BRANCH}
+else
+    echo "[DEPLOY] Repository freshly cloned on branch ${BRANCH}. Skipping redundant git pull."
+fi
 
-# clean install prod deps
+# Clean install prod dependencies
 DEPS_CHANGED="${DEPS_CHANGED:-}"
 if [ "$DEPS_CHANGED" = "true" ] || [ ! -d "node_modules" ]; then
     if [ -f "package.json" ]; then
@@ -50,10 +89,10 @@ else
     echo "[DEPLOY] Dependencies unchanged. Skipping clean installation...(fast deploy)"
 fi
 
-# reload application via pm2
+# Reload/Restart/Start application via pm2
 CONFIG_PATH=${CONFIG_PATH:-ecosystem.config.js}
 if command -v pm2 >/dev/null 2>&1; then
-    pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH}
+    pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH} || pm2 start ${CONFIG_PATH}
 else
     echo "[DEPLOY] pm2 not found in PATH; skipping PM2 reload (local simulation mode)"
 fi
@@ -99,7 +138,7 @@ if [ ${HEALTHY} -eq 0 ]; then
             npm ci --omit=dev
         fi
         if command -v pm2 >/dev/null 2>&1; then
-            pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH} || true
+            pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH} || pm2 start ${CONFIG_PATH} || true
         fi
 
         # Re-check health after rollback
@@ -114,4 +153,3 @@ fi
 
 echo "[DEPLOY] deployment succesful for branch : ${BRANCH}"
 exit 0
-

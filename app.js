@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import { deployQueue } from "./queues/deployQueue.js";
 import "./workers/deployWorker.js";
+import { handleDeploymentLogStream } from "./services/logStreamer.js";
 
 const app = express();
 const port = process.env.PORT || 5050;
@@ -80,7 +81,8 @@ app.post("/api/github/webhook", async (req, res) => {
       commitMessage,
       commitUrl,
       author: body.pusher?.name || headCommit.author?.name || "unknown",
-      depsChanged, // boolean: true if dependencies need reinstalling
+      depsChanged, 
+      isPrivate: Boolean(body.repository?.private),
     });
 
     console.log(
@@ -97,6 +99,9 @@ app.post("/api/github/webhook", async (req, res) => {
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
+// SSE Live Log Streaming Endpoint
+app.get("/api/deployments/:jobId/logs", handleDeploymentLogStream);
 
 app.listen(port, () => {
   console.log("server listening on port: ", port);

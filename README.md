@@ -2,7 +2,7 @@
 
 A lightweight, self-hosted, event-driven CI/CD automation engine engineered with **Node.js**, **Express**, **BullMQ**, **Redis**, and **Bash**.
 
-AutoShip transforms incoming GitHub push webhooks into serialized, zero-downtime deployment pipelines featuring **constant-time cryptographic HMAC verification**, **queue-based race-condition elimination**, **cross-platform process streaming**, **intelligent change detection (Fast Deploy)**, **directory isolation & remote mismatch guards**, **Redis-backed True LKG rollback with Day 0 protection**, and **real-time ChatOps alerts via Slack Block Kit**.
+AutoShip transforms incoming GitHub push webhooks into serialized, zero-downtime deployment pipelines featuring **constant-time cryptographic HMAC verification**, **queue-based race-condition elimination**, **backpressure-safe live log streaming via Server-Sent Events (SSE)**, **dynamic workspace auto-provisioning with private repo authentication**, **intelligent change detection (Fast Deploy)**, **Redis-backed True LKG rollback with Day 0 protection**, and **real-time ChatOps alerts via Slack Block Kit**.
 
 ---
 
@@ -37,37 +37,42 @@ AutoShip transforms incoming GitHub push webhooks into serialized, zero-downtime
 │  ├── 2. Report GitHub Commit Status -> "pending" 🟡                    │
 │  ├── 3. Auto-detect platform shell (Git Bash on Win32 vs /bin/bash)    │
 │  ├── 4. Inject 12-factor environment variables into child process      │
-│  └── 5. Spawn deploy.sh via streaming child_process.spawn              │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │
-                                   ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│  Deployment Execution (deploy.sh)                                      │
-│  ├── [Phase 1] Directory Isolation & Remote Mismatch Guard             │
-│  │   ├── Verify TARGET_DIR exists (prevents CI/CD self-corruption)     │
-│  │   └── Validate remote.origin.url matches target repository          │
-│  ├── [Phase 2] Git Synchronization                                     │
-│  │   └── git fetch origin, checkout, and pull target branch            │
-│  ├── [Phase 3] Intelligent Change Detection                            │
-│  │   ├── Deps changed or node_modules missing: run 'npm ci --omit=dev' │
-│  │   └── Deps unchanged: Skip install (⚡ Fast Deploy: ~3s vs ~45s)   │
-│  ├── [Phase 4] Zero-Downtime Process Reload                            │
-│  │   └── PM2 reload / restart ecosystem.config.js                      │
-│  └── [Phase 5] Active Health Check Probe Loop                          │
-│      └── HTTP GET http://127.0.0.1:TARGET_PORT/health (5 retries)      │
-│               │                                          │
-│        [200 OK: Healthy]                       [500 / Timeout: Failed]
-│               │                                          │
-│               ▼                                          ▼
-│    Deploy Succeeded! 🟢                       Rollback / Teardown 🔴
-│    - Exit code 0                              - If LKG exists:
-│    - Worker updates Redis True LKG               git reset --hard ${LKG_COMMIT}
-│    - GitHub Status: "success"                    npm ci & PM2 reload
-│    - ChatOps: Green Slack Card                - If Day 0 (LKG is null):
-│                                                  PM2 teardown & git reset HEAD
-│                                               - GitHub Status: "failure"
-│                                               - ChatOps: Red Alert Slack Card
-└────────────────────────────────────────────────────────────────────────┘
+│  ├── 5. Throttle childProcess stream via pause()/resume() backpressure │
+│  └── 6. Spawn deploy.sh via streaming child_process.spawn              │
+└───────────────┬──────────────────────────────────────────┬─────────────┘
+                │                                          │
+                │ (stdout/stderr chunks)                   ▼
+                │                          ┌─────────────────────────────┐
+                │                          │ Deployment Execution        │
+                │                          │ (deploy.sh)                 │
+                │                          │ 1. Workspace Auto-Provision │
+                │                          │ 2. Git Fetch & Checkout     │
+                │                          │ 3. Fast Deploy Check        │
+                │                          │ 4. PM2 Reload / Start       │
+                │                          │ 5. Active /health Probe     │
+                │                          └──────────────┬──────────────┘
+                ▼                                         │
+┌──────────────────────────────────────┐                  │
+│  Redis Distributed Log Broker        │                  │
+│  ├── RPUSH deployment:logs:<jobId>   │                  │
+│  │   (Buffers history for replay)    │                  │
+│  └── PUBLISH deployment:channel:<id> │                  │
+│      (Broadcasts live log chunks)    │                  │
+└──────────────────┬───────────────────┘                  │
+                   │                                      │
+                   ▼                                      ▼
+┌──────────────────────────────────────┐       ┌─────────────────────────┐
+│  SSE Streaming Endpoint              │       │ Outcomes:               │
+│  GET /api/deployments/:jobId/logs    │       │ 🟢 Success:             │
+│  ├── Replays historical logs         │       │   - Update Redis LKG    │
+│  ├── Pipes live chunks in real time  │       │   - GitHub: "success"   │
+│  ├── Backpressure-safe (res.drain)   │       │   - Green Slack Card    │
+│  └── Emits 'event: complete' frame   │       │ 🔴 Failure:             │
+└──────────────────────────────────────┘       │   - True LKG Rollback   │
+                                               │   - Day 0 Teardown      │
+                                               │   - GitHub: "failure"   │
+                                               │   - Red Alert Card      │
+                                               └─────────────────────────┘
 ```
 
 ---
@@ -101,19 +106,28 @@ While hosted CI/CD services (GitHub Actions, CircleCI, AWS CodePipeline) are wid
   Concurrent builds simultaneously overwrite `node_modules`, corrupting application state and leading to partial deployments.
 * **The Solution**: AutoShip offloads all incoming jobs to a **BullMQ** queue backed by Redis. The worker runs with strict **`concurrency: 1`**, enforcing atomic, sequential deployments. The HTTP endpoint immediately acknowledges incoming webhooks with **`HTTP 202 Accepted`** in under 15ms, eliminating GitHub delivery timeouts.
 
-### 3. Memory-Safe Event-Driven Process Streaming (`child_process.spawn`)
-* **The Problem**: Node's `child_process.exec()` buffers an entire process’s stdout and stderr in memory with a default limit of 1MB (`maxBuffer`). Running `npm ci` or verbose build scripts quickly exceeds this threshold, abruptly crashing the deployment process.
-* **The Solution**: AutoShip uses `child_process.spawn()` with streaming event handlers (`stdout.on("data")`, `stderr.on("data")`), maintaining flat memory consumption regardless of build log size.
+### 3. Live Build Log Streaming via Server-Sent Events (SSE) & Dual Backpressure
+* **The Problem**: Using `child_process.exec()` buffers stdout in memory up to Node's 1MB `maxBuffer` limit, crashing verbose builds. Furthermore, streaming live logs to slow HTTP clients without flow control causes server memory to balloon as unwritten chunks accumulate in RAM.
+* **The Solution**: AutoShip implements an event-driven SSE pipeline (`GET /api/deployments/:jobId/logs`):
+  - **W3C EventSource Standard**: Emits structured frames (`event: status`, `event: log`, `event: complete`) with mandatory `\n\n` delimiters.
+  - **The Late-Joiner Problem**: Buffers all historical log lines in a Redis List (`RPUSH deployment:logs:<jobId>`) with a 1-hour TTL. Late joiners and refreshed pages receive a full historical replay before transitioning to live Redis Pub/Sub events.
+  - **Dual-Tier Backpressure Protection**:
+    1. *Worker Tier*: Throttles bash output by pausing `childProcess.stdout` until Redis acknowledges each write (`pause()` / `resume()`).
+    2. *HTTP Tier*: Halts socket writes when the client's TCP kernel buffer is saturated (`res.write() === false`) and awaits the socket `'drain'` event before resuming.
+  - **Proxy Heartbeat**: Transmits `: keep-alive\n\n` comments every 15s to prevent timeouts through Nginx, AWS ALBs, or Cloudflare.
 
-### 4. Directory Isolation & Remote Mismatch Guard (Anti-Self-Corruption)
-* **The Problem**: If an environment variable is omitted or misconfigured, shell scripts often default to the current working directory (`.`). Running `git pull` or `npm ci` inside the CI/CD server's own repository corrupts the deployment server itself.
-* **The Solution**: [deploy.sh](deploy.sh) enforces defensive pre-flight validation:
-  1. Validates that `TARGET_DIR` is non-empty and points to an existing directory.
-  2. Queries `git config --get remote.origin.url` and asserts that the remote matches `REPOSITORY`. If there is a mismatch, execution halts immediately with exit code 1 before any Git or filesystem operations are performed.
+### 4. Dynamic Workspace Auto-Provisioning & Private Repository Authentication
+* **The Problem**: Requiring manual directory cloning breaks automation. If an unconfigured repository triggers a deployment, naive scripts execute in `.`, corrupting the CI/CD server itself. Furthermore, cloning private repositories in non-interactive CI/CD environments triggers interactive password prompts (`Username for 'https://github.com':`), freezing the worker indefinitely.
+* **The Solution**:
+  - Sets `export GIT_TERMINAL_PROMPT=0` to ensure Git fails immediately rather than hanging on credential prompts.
+  - Dynamically extracts repository name (`REPO_NAME="${REPOSITORY##*/}"`) and resolves `TARGET_DIR="${TARGET_DIR:-../${REPO_NAME}}"`.
+  - Rejects execution if `TARGET_DIR` evaluates to the CI/CD directory itself (`.`).
+  - Automatically clones repositories that do not exist yet. If `isPrivate: true` is detected from the webhook payload, asserts that `GITHUB_TOKEN` is present and constructs an authenticated clone URL (`https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git`).
+  - Synchronizes the working tree with cryptographic precision using `git reset --hard ${COMMIT_SHA}` (failing fast with exit code 1 if `COMMIT_SHA` is missing), completely avoiding `git pull` merge conflicts or divergence issues.
 
 ### 5. 12-Factor Environment-Based Parameter Injection
 * **The Problem**: Passing deployment parameters as positional shell arguments (`./deploy.sh $1 $2 $3...`) is brittle. Adding, removing, or reordering parameters breaks backward compatibility and creates shell injection vulnerabilities if commit messages contain spaces or quotes.
-* **The Solution**: Follows the **Twelve-Factor App methodology**. [workers/deployWorker.js](workers/deployWorker.js) passes structured configuration via `process.env` during process spawn (`BRANCH`, `REPOSITORY`, `COMMIT_SHA`, `DEPS_CHANGED`, `LKG_COMMIT`). The shell script reads these using POSIX parameter expansion (e.g., `BRANCH="${BRANCH:-}"`), ensuring clean, safe, and easily extensible contracts.
+* **The Solution**: Follows the **Twelve-Factor App methodology**. [workers/deployWorker.js](workers/deployWorker.js) passes structured configuration via `process.env` during process spawn (`BRANCH`, `REPOSITORY`, `COMMIT_SHA`, `DEPS_CHANGED`, `LKG_COMMIT`, `IS_PRIVATE`, `GITHUB_TOKEN`). The shell script reads these using POSIX parameter expansion (e.g., `BRANCH="${BRANCH:-}"`), ensuring clean, safe, and easily extensible contracts.
 
 ### 6. Intelligent Change Detection (Fast Deploy: ~3s vs ~45s)
 * During webhook intake, AutoShip inspects the commit payload delta (`added`, `modified`, and `removed` arrays across all pushed commits).
@@ -153,18 +167,23 @@ While hosted CI/CD services (GitHub Actions, CircleCI, AWS CodePipeline) are wid
 ```
 CICD-with-Github-Webhooks/
 ├── configs/
-│   └── redis.js             # Redis client initialization (maxRetriesPerRequest: null)
+│   ├── projectConfig.js     # Resolves multi-project & branch routing rules
+│   ├── projects.json        # Branch-to-port-and-directory mapping config
+│   └── redis.js             # Standalone Redis client & config (maxRetriesPerRequest: null)
 ├── queues/
-│   └── deployQueue.js       # BullMQ deployment queue definition
+│   └── deployQueue.js       # BullMQ deployment queue definition (with retention)
+├── scripts/
+│   └── deploy.sh            # Shell script: workspace auto-clone, change detection, PM2, True LKG rollback
 ├── services/
 │   ├── githubStatus.js      # GitHub REST Commit Status API client
-│   └── notifier.js          # Slack ChatOps webhook notifications (Block Kit)
+│   ├── logStreamer.js       # SSE protocol, backpressure-safe streaming, Redis Pub/Sub
+│   ├── notifier.js          # Slack ChatOps webhook notifications (Block Kit)
+│   └── webhookHandler.js    # HMAC verification, event filtering, delta inspection
 ├── workers/
-│   └── deployWorker.js      # BullMQ worker: concurrency 1, LKG state, process spawner
+│   └── deployWorker.js      # BullMQ worker: concurrency 1, backpressure-paused spawn, True LKG
 ├── .env.example             # Documented environment variable template
 ├── .gitignore               # Excludes secrets, node_modules, and temporary artifacts
-├── app.js                   # Express server, raw HMAC verification & webhook endpoint
-├── deploy.sh                # Shell script: directory guard, pull, change detection, PM2, LKG rollback
+├── app.js                   # 31-line declarative Express gateway & route registry
 ├── package.json             # ES Module project definition & scripts
 └── README.md                # Technical documentation & systems architecture
 ```
@@ -202,12 +221,12 @@ WEBHOOK_SECRET=your_github_webhook_secret_here
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 
-# Deployment Target Configuration
+# Deployment Target Configuration (Optional: defaults to auto-cloning ../<repo-name>)
 DEPLOY_SCRIPT_PATH=./deploy.sh
 TARGET_DIR=../learning-gh-action
 TARGET_PORT=4000
 
-# GitHub Commit Status API (Requires repo:status or commit status permission)
+# GitHub Status API & Private Repo Clone Token (Optional)
 GITHUB_TOKEN=ghp_your_personal_access_token_here
 
 # Slack Incoming Webhook (Optional)
@@ -265,14 +284,83 @@ POST /api/github/webhook
 ```json
 {
   "msg": "Deployment queued successfully",
-  "jobId": "28"
+  "jobId": "31"
 }
+```
+
+---
+
+### Live Build Log Stream (Server-Sent Events)
+Stream console output in real time as the deployment executes.
+
+```http
+GET /api/deployments/:jobId/logs
+```
+
+**Request via curl:**
+```bash
+curl -N http://127.0.0.1:4566/api/deployments/31/logs
+```
+
+**Request via Browser JavaScript:**
+```javascript
+const es = new EventSource("/api/deployments/31/logs");
+es.addEventListener("status", (e) => console.log("🟡", e.data));
+es.addEventListener("log", (e) => console.log("📄", e.data));
+es.addEventListener("complete", (e) => {
+  console.log("🏁 Finished:", JSON.parse(e.data));
+  es.close();
+});
+```
+
+**Sample Live Stream Output:**
+```text
+event: status
+data: [Worker] Processing Job #31: Deploying Subham0813/learning-gh-action (master) - 2aaa030
+
+event: status
+data: [Worker] Current LKG on record: a8395f4
+
+event: log
+data: [DEPLOY] starting for branch : master
+
+event: log
+data: [DEPLOY] Switching directory to target: ../learning-gh-action
+
+event: log
+data: [DEPLOY] LKG commit from Redis: a8395f44a900122c400fdc975fb8a6952d4be704
+
+event: log
+data: [DEPLOY] pulling latest code...
+
+event: log
+data: From https://github.com/Subham0813/learning-gh-action
+data:  * branch            master     -> FETCH_HEAD
+
+event: log
+data: Already up to date.
+
+event: log
+data: [CHECK] checking server health...
+
+event: log
+data: [CHECK] Attempt 1/5 checking http://127.0.0.1:4000/health...
+
+event: log
+data: [CHECK] Server is healthy...
+
+event: log
+data: [DEPLOY] deployment succesful for branch : master
+
+event: complete
+data: {"status":"success","code":0,"duration":"7.1s","commitSha":"2aaa030322bab50daf0d12a415f98d998d2ce927","message":"Deployment passed all health checks!"}
 ```
 
 ---
 
 ## 🔮 Upcoming Roadmap
 
-- [ ] **Live Build Log Streaming via Server-Sent Events (SSE)**: Expose real-time build stdout/stderr streaming to browser dashboards and CLI consumers (`GET /api/deployments/:jobId/logs`) using event-driven SSE and Redis Pub/Sub buffer caching for late joiners.
+- [x] **Live Build Log Streaming via Server-Sent Events (SSE)**: Expose real-time build stdout/stderr streaming to browser dashboards and CLI consumers (`GET /api/deployments/:jobId/logs`) using event-driven SSE and Redis Pub/Sub buffer caching for late joiners.
+- [x] **Config-Driven Multi-Project Routing**: Add a `configs/projects.json` mapping configuration to support deploying multiple independent repositories on different ports from a single AutoShip instance.
+- [x] **Branch-Based Environment Isolation**: Dynamically route `dev`/`develop` pushes to staging/test environments and `master`/`main` pushes to production in completely isolated directories.
 - [ ] **Webhook Replay Protection**: Redis nonce and timestamp sliding-window verification to safeguard against intercepted webhook replay attempts.
-- [ ] **Multi-Tenant Git Worktree Isolation**: Dynamically isolate concurrent builds across different repositories using ephemeral `git worktree` directories.

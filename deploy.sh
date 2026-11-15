@@ -7,6 +7,7 @@ export GIT_TERMINAL_PROMPT=0
 # Configuration
 BRANCH="${BRANCH:-}"
 REPOSITORY="${REPOSITORY:-}"
+COMMIT_SHA="${COMMIT_SHA:-}"
 IS_PRIVATE="${IS_PRIVATE:-false}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -66,14 +67,23 @@ if [[ "${CURRENT_REMOTE}" != *"${REPOSITORY}"* ]]; then
     exit 1
 fi
 
-# Pull latest changes (skip if freshly cloned)
+# Check CommitSha 
+if [ -z "${COMMIT_SHA}" ]; then
+    echo "[DEPLOY] FATAL: COMMIT_SHA is required but was not provided!"
+    echo "[DEPLOY] Refusing to deploy to prevent unverified branch tip execution."
+    exit 1
+fi
+
+# Synchronize code to exact COMMIT_SHA
 if [ ${JUST_CLONED} -eq 0 ]; then
-    echo "[DEPLOY] pulling latest code..."
-    git fetch origin ${BRANCH}
-    git checkout ${BRANCH}
-    git pull origin ${BRANCH}
+    echo "[DEPLOY] Fetching latest changes for branch: ${BRANCH}..."
+    git fetch origin "${BRANCH}"
+    git checkout "${BRANCH}"
+
+    echo "[DEPLOY] Synchronizing working tree to target commit: ${COMMIT_SHA}"
+    git reset --hard "${COMMIT_SHA}"
 else
-    echo "[DEPLOY] Repository freshly cloned on branch ${BRANCH}. Skipping redundant git pull."
+    echo "[DEPLOY] Repository freshly cloned on branch ${BRANCH}. Skipping redundant fetch."
 fi
 
 # Clean install prod dependencies

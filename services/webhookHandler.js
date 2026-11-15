@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { deployQueue } from "../queues/deployQueue.js";
-
+import { resolveBranchConfig } from "./projectConfig.js";
 /**
  * Constant-time HMAC-SHA256 signature verification
  */
@@ -73,8 +73,13 @@ export const parseWebhookPayload = (body) => {
     headCommit.url ||
     `https://github.com/${body.repository?.full_name}/commit/${body.after}`;
 
+  const repository = body.repository?.full_name || "unknown";
+  const branchConfig = resolveBranchConfig(repository, branch);
+
   return {
-    repository: body.repository?.full_name || "unknown",
+    shouldDeploy: branchConfig.shouldDeploy,
+    reason: branchConfig.reason,
+    repository,
     branch,
     commitSha: body.after,
     commitMessage,
@@ -82,6 +87,11 @@ export const parseWebhookPayload = (body) => {
     author: body.pusher?.name || headCommit.author?.name || "unknown",
     depsChanged,
     isPrivate: Boolean(body.repository?.private),
+    deployEnv: branchConfig.env,
+    targetPort: branchConfig.port,
+    targetDir: branchConfig.targetDir,
+    configPath: branchConfig.configPath,
+    healthEndpoint: branchConfig.healthEndpoint,
   };
 };
 
@@ -108,11 +118,15 @@ export const handleGithubWebhook = async (req, res) => {
     }
 
     const jobData = parseWebhookPayload(req.body);
+    if (!jobData.shouldDeploy) {
+      console.log(`[Webhook] Skipping deployment: ${jobData.reason}`);
+      return res.status(200).json({ msg: jobData.reason });
+    }
 
     const job = await deployQueue.add("github-deploy", jobData);
 
     console.log(
-      `[Queue] Added deployment job #${job.id} for commit ${jobData.commitSha?.slice(0, 7)} (depsChanged: ${jobData.depsChanged})`,
+      `[Queue] Added deployment job #${job.id} for commit ${jobData.commitSha?.slice(0, 7)} [${jobData.deployEnv}] (depsChanged: ${jobData.depsChanged})`,
     );
 
     return res.status(202).json({

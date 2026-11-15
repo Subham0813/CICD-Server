@@ -1,6 +1,5 @@
 import express from "express";
 import crypto from "node:crypto";
-import { deployQueue } from "./queues/deployQueue.js";
 import "./workers/deployWorker.js";
 import { handleDeploymentLogStream } from "./services/logStreamer.js";
 import { handleGithubWebhook } from "./services/webhookHandler.js";

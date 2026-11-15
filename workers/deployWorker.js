@@ -28,6 +28,11 @@ export const deployWorker = new Worker(
       author,
       depsChanged,
       isPrivate = false,
+      deployEnv = "production",
+      targetPort,
+      targetDir,
+      configPath,
+      healthEndpoint,
     } = job.data;
     const lkgKey = `lkg:${repository}:${branch}`;
     const currentLkg = (await redisClient.get(lkgKey)) || "";
@@ -65,10 +70,17 @@ export const deployWorker = new Worker(
     });
 
     return new Promise((resolve, reject) => {
-      const path = process.env.DEPLOY_SCRIPT_PATH || "./deploy.sh";
-      if (!path) return reject(new Error("script path not found."));
+      const deployScriptPath =
+        process.env.DEPLOY_SCRIPT_PATH || "./scripts/deploy.sh";
+      if (!existsSync(deployScriptPath)) {
+        return reject(
+          new Error(
+            `[Worker] [FATAL] Deploy script not found at '${deployScriptPath}'. Check DEPLOY_SCRIPT_PATH in .env.`,
+          ),
+        );
+      }
 
-      const childProcess = spawn(bashBin, [path], {
+      const childProcess = spawn(bashBin, [deployScriptPath], {
         env: {
           ...process.env,
           BRANCH: branch,
@@ -78,6 +90,11 @@ export const deployWorker = new Worker(
           LKG_COMMIT: currentLkg,
           IS_PRIVATE: String(isPrivate),
           GITHUB_TOKEN: process.env.GITHUB_TOKEN || "",
+          TARGET_DIR: targetDir || "",
+          TARGET_PORT: targetPort ? String(targetPort) : "",
+          CONFIG_PATH: configPath || "",
+          HEALTH_ENDPOINT: healthEndpoint || "",
+          DEPLOY_ENV: deployEnv,
         },
       });
 
@@ -146,6 +163,7 @@ export const deployWorker = new Worker(
             depsChanged,
             lkgSha: commitSha,
             isDayZero: !currentLkg,
+            deployEnv,
           });
 
           return resolve({ success: true, commitSha });
@@ -187,6 +205,7 @@ export const deployWorker = new Worker(
             depsChanged,
             lkgSha: currentLkg,
             isDayZero,
+            deployEnv,
             errorMessage: `deploy.sh exited with code ${code}`,
           });
 
@@ -228,6 +247,7 @@ export const deployWorker = new Worker(
           depsChanged,
           lkgSha: currentLkg,
           isDayZero: !currentLkg,
+          deployEnv,
           errorMessage: err.message,
         });
 

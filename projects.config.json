@@ -1,0 +1,21 @@
+{
+  "Subham0813/learning-gh-action": {
+    "branches": {
+      "master": {
+        "env": "production",
+        "port": 4000,
+        "targetDir": "../learning-gh-action-prod",
+        "configPath": "ecosystem.config.js",
+        "healthEndpoint": "/health"
+      },
+      "dev": {
+        "env": "staging",
+        "port": 4400,
+        "targetDir": "../learning-gh-action-dev",
+        "configPath": "ecosystem.config.js",
+        "healthEndpoint": "/health"
+      }
+    }
+  }
+}
+

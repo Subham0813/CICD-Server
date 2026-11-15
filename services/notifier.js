@@ -16,6 +16,7 @@ export const sendDeploymentNotification = async ({
   lkgSha = null,
   isDayZero = false,
   errorMessage = null,
+  deployEnv = "production",
 }) => {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL;
   if (!webhookUrl) {
@@ -78,6 +79,10 @@ export const sendDeploymentNotification = async ({
               {
                 type: "mrkdwn",
                 text: `*Branch:*\n\`${branch}\``,
+              },
+              {
+                type: "mrkdwn",
+                text: `*Environment:*\n\`${deployEnv.toUpperCase()}\``,
               },
               {
                 type: "mrkdwn",

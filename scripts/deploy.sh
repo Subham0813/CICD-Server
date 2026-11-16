@@ -40,9 +40,9 @@ fi
 # Resolve repository name
 REPO_NAME="${REPOSITORY##*/}"
 
-# Guard against accidental deployment inside CI/CD server directory
-if [ "${TARGET_DIR}" = "." ] || [ -z "${REPO_NAME}" ]; then
-    echo "[Deploy] [FATAL] Refusing to deploy inside CI/CD server directory."
+# Guard against accidental deployment inside root or CI/CD server directory
+if [ "${TARGET_DIR}" = "." ] || [ "${TARGET_DIR}" = "/" ] || [ -z "${REPO_NAME}" ]; then
+    echo "[Deploy] [FATAL] Refusing to deploy inside root or CI/CD server directory."
     exit 1
 fi
 
@@ -139,8 +139,8 @@ fi
 PORT="${TARGET_PORT}"
 HEALTH_ENDPOINT="${HEALTH_ENDPOINT:-/health}"
 HEALTH_URL="http://127.0.0.1:${PORT}${HEALTH_ENDPOINT}"
-MAX_RETRIES=5
-RETRY_DELAY=2
+MAX_RETRIES="${MAX_RETRIES:-10}"
+RETRY_DELAY="${RETRY_DELAY:-2}"
 echo "[Health] [INFO] Checking server health at ${HEALTH_URL}..."
 HEALTHY=0
 for i in $(seq 1 $MAX_RETRIES); do

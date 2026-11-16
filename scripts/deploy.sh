@@ -25,13 +25,13 @@ if [ -z "${COMMIT_SHA}" ]; then
     exit 1
 fi
 
-# Guard: Mandatory TARGET_DIR from projects.config.json (SSOT)
+# Guard: Mandatory TARGET_DIR from projects.config.json
 if [ -z "${TARGET_DIR}" ]; then
     echo "[Deploy] [FATAL] TARGET_DIR was not provided! Configure it in projects.config.json."
     exit 1
 fi
 
-# Guard: Mandatory TARGET_PORT from projects.config.json (SSOT)
+# Guard: Mandatory TARGET_PORT from projects.config.json
 if [ -z "${TARGET_PORT}" ]; then
     echo "[Deploy] [FATAL] TARGET_PORT was not provided! Configure it in projects.config.json."
     exit 1

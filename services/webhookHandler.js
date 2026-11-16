@@ -92,6 +92,7 @@ export const parseWebhookPayload = (body) => {
     targetDir: branchConfig.targetDir,
     configPath: branchConfig.configPath,
     healthEndpoint: branchConfig.healthEndpoint,
+    envSource: branchConfig.envSource,
   };
 };
 

@@ -102,6 +102,18 @@ else
     echo "[Deploy] [INFO] Repository freshly cloned on branch ${BRANCH}. Skipping redundant fetch."
 fi
 
+# Inject production environment secrets if configured
+ENV_SOURCE="${ENV_SOURCE:-}"
+if [ -n "${ENV_SOURCE}" ]; then
+    if [ ! -f "${ENV_SOURCE}" ]; then
+        echo "[Deploy] [FATAL] Configured ENV_SOURCE '${ENV_SOURCE}' does not exist on disk!"
+        echo "[Deploy] [FATAL] Please place the secrets file on the server before deploying."
+        exit 1
+    fi
+    echo "[Deploy] [INFO] Injecting production secrets from '${ENV_SOURCE}' into '.env'..."
+    cp -f "${ENV_SOURCE}" ".env"
+fi
+
 # Clean install prod dependencies
 DEPS_CHANGED="${DEPS_CHANGED:-}"
 if [ "$DEPS_CHANGED" = "true" ] || [ ! -d "node_modules" ]; then

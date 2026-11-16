@@ -33,6 +33,7 @@ export const deployWorker = new Worker(
       targetDir,
       configPath,
       healthEndpoint,
+      envSource,
     } = job.data;
     const lkgKey = `lkg:${repository}:${branch}`;
     const currentLkg = (await redisClient.get(lkgKey)) || "";
@@ -95,6 +96,7 @@ export const deployWorker = new Worker(
           CONFIG_PATH: configPath || "",
           HEALTH_ENDPOINT: healthEndpoint || "",
           DEPLOY_ENV: deployEnv,
+          ENV_SOURCE: envSource || "",
         },
       });
 

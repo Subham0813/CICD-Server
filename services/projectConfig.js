@@ -70,5 +70,6 @@ export const resolveBranchConfig = (repository, branch) => {
     targetDir: branchConfig.targetDir,
     configPath: branchConfig.configPath || "ecosystem.config.js",
     healthEndpoint: branchConfig.healthEndpoint || "/health",
+    envSource: branchConfig.envSource || null,
   };
 };

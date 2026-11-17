@@ -37,6 +37,9 @@ if [ -z "${TARGET_PORT}" ]; then
     exit 1
 fi
 
+# Ensure PORT is explicitly exported as TARGET_PORT so PM2 and target app inherit the correct port
+export PORT="${TARGET_PORT}"
+
 # Resolve repository name
 REPO_NAME="${REPOSITORY##*/}"
 

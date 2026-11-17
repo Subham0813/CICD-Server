@@ -81,9 +81,13 @@ export const deployWorker = new Worker(
         );
       }
 
+      // Do NOT leak CI/CD server's PORT (4566) into child deploy process
+      const { PORT: _ciPort, ...cleanEnv } = process.env;
+
       const childProcess = spawn(bashBin, [deployScriptPath], {
         env: {
-          ...process.env,
+          ...cleanEnv,
+          PORT: targetPort ? String(targetPort) : "4000",
           BRANCH: branch,
           REPOSITORY: repository,
           COMMIT_SHA: commitSha,

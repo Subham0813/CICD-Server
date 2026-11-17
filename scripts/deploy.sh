@@ -130,10 +130,10 @@ else
     echo "[Deploy] [INFO] Dependencies unchanged. Skipping clean installation (fast deploy)."
 fi
 
-# Reload/Restart/Start application via pm2
+# Reload/Restart/Start application via pm2 (force --update-env so TARGET_PORT overrides daemon cache)
 CONFIG_PATH=${CONFIG_PATH:-ecosystem.config.js}
 if command -v pm2 >/dev/null 2>&1; then
-    pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH} || pm2 start ${CONFIG_PATH}
+    pm2 reload ${CONFIG_PATH} --update-env || pm2 restart ${CONFIG_PATH} --update-env || pm2 start ${CONFIG_PATH} --update-env
 else
     echo "[Deploy] [WARN] pm2 not found in PATH; skipping PM2 reload (local simulation mode)"
 fi
@@ -180,7 +180,7 @@ if [ ${HEALTHY} -eq 0 ]; then
             npm ci --omit=dev
         fi
         if command -v pm2 >/dev/null 2>&1; then
-            pm2 reload ${CONFIG_PATH} || pm2 restart ${CONFIG_PATH} || pm2 start ${CONFIG_PATH} || true
+            pm2 reload ${CONFIG_PATH} --update-env || pm2 restart ${CONFIG_PATH} --update-env || pm2 start ${CONFIG_PATH} --update-env || true
         fi
 
         # Re-check health after rollback
